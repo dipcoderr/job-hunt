@@ -1,264 +1,270 @@
-# jobhunt
+# Job Hunt
 
-A personal job-search agent. It reads public ATS APIs every morning, throws away
-the ~99% that don't fit you, scores what's left against your resume, drafts an
-application kit for the best few, and emails you a digest.
+### Find relevant roles. Review every application yourself.
 
-**It never submits an application.** It finds, filters, ranks and drafts. You
-read the digest, edit the cover note, and press submit yourself.
+An open-source Python tool that checks public careers boards, filters and ranks
+job postings against a candidate profile, then prepares a daily digest and
+application drafts.
 
-```
-2000 postings  →  40 candidates  →  5 in your inbox
-   fetch          regex/location      LLM screen
-                  /freshness gate     + draft
-                  (free, no LLM)
-```
+**It never submits applications.** You decide which roles to pursue, review
+every generated draft, and apply yourself.
 
-> **New to Python?** Read **[SETUP.md](SETUP.md)** instead — it's a 13-step guide
-> that assumes you have nothing installed. This README assumes you're comfortable
-> with a terminal.
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-scheduled-2088FF?logo=githubactions&logoColor=white)](https://github.com/dipcoderr/job-hunt/actions)
+[![Tests](https://img.shields.io/badge/tests-63%20passing-brightgreen)](tests/)
+
+[Features](#features) · [Technology](#technology) · [Get started](#get-started) · [Configuration](#configuration) · [Scheduling](#scheduled-digests)
 
 ---
 
-## Run it in 30 seconds, no API key
+## Features
+
+- **Collects public job listings** from Greenhouse, Lever, and Ashby boards.
+- **Filters before calling an AI model** using configurable title, location,
+  and posting-age rules.
+- **Scores matching roles** against a profile derived from your resume.
+- **Drafts an application kit** for selected jobs: a fit summary, tailored
+  resume bullets, potential gaps, a cover note, and questions to ask.
+- **Creates an HTML digest** and CSV application tracker.
+- **Avoids repeat listings** with a local, private `seen.json` store.
+- **Runs offline for development** using realistic fixtures and a clearly
+  labeled keyword-only scoring stub.
+- **Can send a scheduled weekday digest** using GitHub Actions and your own
+  configured secrets.
+
+## How it works
+
+```text
+Public job boards → title/location/age filters → profile-based screening
+                                                       ↓
+                                       selected roles and draft kits
+                                                       ↓
+                                       HTML digest + application tracker
+```
+
+The local prefilter is deterministic and does not use an LLM. This reduces the
+number of postings sent for screening. The exact counts depend on the boards
+and filters you configure.
+
+## Technology
+
+| Area | Tools |
+|---|---|
+| Language | Python 3.10+ |
+| Job sources | Greenhouse, Lever, and Ashby public board APIs |
+| Configuration | YAML (`config.yaml`, `companies.yaml`) |
+| AI providers | Anthropic, Google Gemini, Groq, OpenAI-compatible APIs, and Ollama |
+| Email | SMTP |
+| Automation | GitHub Actions |
+| Tests | pytest; parsers and pipeline tests use fixtures and stubs |
+
+## Get started
+
+### Requirements
+
+- Python 3.10 or later
+- `pip`
+- An AI provider key for profile generation and AI-powered screening
+- Optional: SMTP credentials if you want to send the digest by email
+
+For detailed first-time setup, see the [step-by-step setup guide](SETUP.md).
+
+### Install
 
 ```bash
-git clone <your-repo> && cd jobhunt
-python -m venv .venv && .venv/Scripts/activate      # Windows
-# python -m venv .venv && source .venv/bin/activate # macOS/Linux
-pip install -r requirements.txt
+git clone https://github.com/dipcoderr/job-hunt.git
+cd job-hunt
 
+python -m venv .venv
+# macOS/Linux:
+source .venv/bin/activate
+# Windows PowerShell:
+# .venv\Scripts\Activate.ps1
+
+python -m pip install -r requirements.txt
+```
+
+### Try the offline demo
+
+No API key or network access is needed for this run:
+
+```bash
 python -m jobhunt run --mock --scorer keyword
 ```
 
-`--mock` runs bundled fixtures through the **real parsers** — no network.
-`--scorer keyword` swaps the LLM for a dumb token-overlap stub, so the whole
-pipeline runs with no secrets configured. You should see:
+The mock mode sends bundled Greenhouse, Lever, and Ashby examples through the
+normal parsers. The keyword scorer is intended only to test the pipeline; it is
+not an AI assessment and should not be used to judge real applications. The
+generated digest is written to `out/digest.html`.
 
-```
-[2/5] filtering
-  prefilter: 12 -> 5 (dropped title=5 location=1 stale=1)
-[3/5] screening 5 jobs (keyword stub — DEV ONLY)
-  3 scored >= 7.0
-[5/5] digest
-  wrote out/digest.html
-
-funnel: 12 scanned -> 5 passed filters -> 5 new -> 3 in digest
-```
-
-Open `out/digest.html` in a browser. That's the email you'd have received.
-
-> The keyword scorer is **dev-only**. It cannot tell a Staff role from a
-> new-grad one and has no idea what the words mean. It exists to prove the
-> plumbing, never to build a digest you'd act on.
-
----
-
-## Set it up for real
-
-### 1. Point it at companies you'd actually join
-
-Edit `companies.yaml`. The slug is the last path segment of a company's public
-careers board:
-
-| Board URL | `ats` | `slug` |
-|---|---|---|
-| `boards.greenhouse.io/stripe` | `greenhouse` | `stripe` |
-| `jobs.lever.co/netlify` | `lever` | `netlify` |
-| `jobs.ashbyhq.com/ramp` | `ashby` | `ramp` |
-
-The shipped list is **examples** — verify each before trusting the output.
-Companies migrate between ATS vendors and slugs go dead. A dead slug prints an
-HTTP status and returns nothing; it never kills the run. Watch the per-board
-counts on stdout: a board reporting 0 every day is a slug that needs fixing.
-
-Start with 10–15 companies. A list of 200 is mostly noise.
-
-**No LinkedIn or Naukri.** Neither has a public API and scraping them violates
-their terms of service. The three ATS endpoints above are documented, unauthenticated,
-and intended to be read.
-
-### 2. Tune the filters
-
-`config.yaml` holds the deterministic gate that runs **before** any LLM call.
-This is the whole cost story — get it right and you spend cents a day.
-
-```yaml
-filters:
-  include_titles: ['\bsde\b', 'software development engineer', ...]
-  exclude_titles: ['\b(staff|principal)\b', '\b(manager)\b', ...]
-  locations: [bangalore, bengaluru, india]
-  allow_remote: true
-  max_age_days: 30
-score_threshold: 7.0
-max_per_digest: 5
-```
-
-> **`sde` does not match "Software Development Engineer".** They share no
-> substring. Use `\bsde\b` for the acronym *and* list the spelled-out variants
-> separately, or you'll silently miss half of Amazon-style postings. There's a
-> test pinning this.
-
-### 3. Build your profile
-
-```bash
-cp .env.example .env      # add ANTHROPIC_API_KEY
-python -m jobhunt profile --resume resume.pdf
-```
-
-PDFs go over as a base64 document block (Anthropic and Gemini both read them
-natively — no OCR, no text extraction library). `.txt` and `.md` also work and
-are the fallback for providers that can't take documents.
-
-This writes `profile.json`. It's gitignored — read it, fix anything the model
-got wrong, and keep it out of version control.
-
-### 4. Run it
-
-```bash
-python -m jobhunt run                    # build the digest
-python -m jobhunt run --send             # ...and email it
-python -m jobhunt run --limit 10         # cost guard while tuning
-python -m jobhunt run --no-draft         # screen only, skip the expensive pass
-```
-
----
-
-## Picking providers
-
-Screening reads hundreds of jobs and wants the cheapest decent model. Drafting
-runs ~5 times and wants the best one. So they're configured separately:
-
-```bash
-LLM_PROVIDER=anthropic          # sets both stages
-SCREEN_PROVIDER=groq            # ...override per stage
-DRAFT_PROVIDER=anthropic
-SCREEN_MODEL=claude-haiku-4-5-20251001
-DRAFT_MODEL=claude-sonnet-5
-```
-
-| Provider | Value | Key | PDF resumes | Notes |
-|---|---|---|---|---|
-| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | yes | default; uses the official SDK |
-| Google Gemini | `gemini` | `GEMINI_API_KEY` | yes | generous free tier |
-| Groq | `groq` | `GROQ_API_KEY` | no | very fast, free tier |
-| OpenAI-compatible | `openai-compatible` | `GROQ_API_KEY` + `LLM_BASE_URL` | no | Together, OpenRouter, vLLM |
-| Ollama | `ollama` | none | no | fully local, `OLLAMA_HOST` |
-
-Everything except Anthropic goes over plain `requests`, so you can delete the
-`anthropic` line from `requirements.txt` and still run the whole thing.
-
-Adding a provider is one class in [`jobhunt/providers.py`](jobhunt/providers.py)
-with a `complete()` method, plus an entry in the `PROVIDERS` dict.
-
----
-
-## Tracking
-
-`seen.json` is both the dedupe index and the application tracker — a job you've
-already been shown is never shown again. It's gitignored: it's yours, and
-shipping one would break the first run for anyone who cloned the repo.
-
-```bash
-python -m jobhunt applied "greenhouse:stripe:5501001"   # id is in the digest
-python -m jobhunt stats                                 # + CSV export
-```
-
-`out/tracker.csv` opens in any spreadsheet.
-
----
-
-## Scheduling
-
-[`.github/workflows/daily.yml`](.github/workflows/daily.yml) runs it at 06:00 IST
-on weekdays. `seen.json` is carried between runs with `actions/cache`, not
-committed — it's personal, and a `seen.json` in the repo would mark every job as
-already-seen for anyone who cloned it. Nothing personal ever enters git.
-
-Repository **secrets** to set (Settings → Secrets and variables → Actions):
-
-| Secret | What |
-|---|---|
-| `PROFILE_JSON` | the entire contents of your local `profile.json` |
-| `ANTHROPIC_API_KEY` | (or `GEMINI_API_KEY` / `GROQ_API_KEY`) |
-| `SMTP_USER` / `SMTP_PASS` | Gmail address + **App Password**, not your login |
-| `MAIL_TO` | where the digest goes |
-
-Optional repository **variables**: `LLM_PROVIDER`, `SCREEN_PROVIDER`,
-`DRAFT_PROVIDER`, `SCREEN_MODEL`, `DRAFT_MODEL`.
-
-Trigger it by hand first — Actions → *daily job digest* → *Run workflow*, with
-`dry_run` ticked to build the digest artifact without emailing.
-
-Gmail needs an [App Password](https://myaccount.google.com/apppasswords); your
-normal password stops working once 2FA is on.
-
----
-
-## Layout
-
-```
-jobhunt/
-  fetch.py       Job dataclass, strip_html, 3 pure parsers, fetch_all
-  prefilter.py   title/location/freshness gate — no LLM, no cost
-  providers.py   the swappable provider interface + 5 backends
-  llm.py         screen() / draft() / build_profile() / keyword stub
-  digest.py      HTML email (inline CSS only — Gmail strips <style>)
-  mailer.py      SMTP
-  store.py       seen.json dedupe + tracker + CSV export
-  mock.py        fixtures in each ATS's native JSON shape
-  cli.py         argparse: profile / run / applied / stats
-config.yaml      filters, thresholds, paths
-companies.yaml   boards to poll
-tests/           55 tests, no network, no key
-```
-
-HTTP is kept out of the parsers on purpose. Each `parse_*(slug, company, body)`
-takes already-decoded JSON and returns `list[Job]`, which is what makes `--mock`
-exercise the real code path instead of a parallel implementation.
-
-Every job gets `job_id = "{ats}:{slug}:{id}"` — globally unique, so the same
-role posted on two boards is still two rows, and a re-run never duplicates.
-
-### ATS quirks the parsers handle
-
-- **Greenhouse** — `content` is HTML-entity-escaped HTML. Unescape *before*
-  stripping tags and again after, or you ship `&amp;` into the prompt.
-- **Lever** — `createdAt` is epoch **milliseconds**. The full JD is split across
-  `descriptionPlain` **+** `lists[].text` **+** `lists[].content` **+**
-  `additionalPlain`; concatenate all four or you lose the requirements section
-  and every job looks unqualified.
-- **Ashby** — skip `isListed: false`; those are unpublished drafts.
-
----
-
-## Tests
+Run the test suite with:
 
 ```bash
 python -m pytest tests -q
 ```
 
-No network, no API key, no cost. The suite covers:
+## Configuration
 
-- each parser against fixtures in its **native** ATS shape
-- the two bugs that cost me an evening each: Lever's epoch-ms timestamps
-  (fixture dates are generated relative to *now*, never hardcoded, so they
-  can't silently age past the freshness gate) and the `\bsde\b` regex
-- prefilter rejects the planted junk: wrong seniority, wrong city, wrong
-  function, a stale posting, an unlisted Ashby draft
-- the LLM layer with the provider stubbed: batching splits at the configured
-  size, JD truncation is applied before send, fenced/preamble/object-or-array
-  JSON all parse, scores land on the right job when returned out of order, a
-  failed batch warns and the run continues, and the draft kit always has every
-  key the digest renders
+### Choose the job boards
 
----
+Edit [`companies.yaml`](companies.yaml) to add companies you want to follow.
+Each entry identifies the board type, its public board slug, and a display
+name:
 
-## Cost
+```yaml
+companies:
+  - {ats: greenhouse, slug: example-company, name: Example Company}
+  - {ats: lever, slug: another-company, name: Another Company}
+  - {ats: ashby, slug: third-company, name: Third Company}
+```
 
-With ~15 boards, a tight `config.yaml`, Haiku screening and Sonnet drafting,
-this lands in the low single-digit rupees per day. The prefilter is what makes
-that true: nothing reaches a model until it has already passed title, location
-and freshness. Set `SCREEN_PROVIDER=groq` or `gemini` and it's free.
+The slug is the last part of the company's board URL. Confirm each board is
+active before relying on its results; companies can change providers or board
+slugs.
 
-Use `--limit` while tuning filters so a bad regex can't run up a bill.
+| Provider | Public jobs endpoint |
+|---|---|
+| Greenhouse | `https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true` |
+| Lever | `https://api.lever.co/v0/postings/{slug}?mode=json` |
+| Ashby | `https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true` |
+
+The parsers normalize these different formats into a shared job record.
+Unlisted Ashby drafts are skipped, and each record gets a board-qualified ID
+for deduplication.
+
+### Tune the filters
+
+[`config.yaml`](config.yaml) controls the deterministic prefilter, screening,
+drafting, and output paths. Start by adjusting the title patterns and locations
+to match the roles you want:
+
+```yaml
+filters:
+  include_titles: [...]
+  exclude_titles: [...]
+  locations: [...]
+  allow_remote: true
+  max_age_days: 30
+
+score_threshold: 4.0
+max_per_digest: 5
+```
+
+Use `--limit` while tuning to cap the number of jobs sent to an AI provider.
+The shipped company list and filters are examples; review and personalize
+them before a real run.
+
+### Create a candidate profile
+
+Provide a resume file in PDF, TXT, or Markdown format and run:
+
+```bash
+python -m jobhunt profile --resume path/to/resume.pdf
+```
+
+The command writes `profile.json` by default. Review the generated profile and
+correct it before using it. The profile and resume are private, gitignored
+files; do not commit them.
+
+For AI features, configure the provider and corresponding key in your local
+environment (for example in a local `.env` file):
+
+```dotenv
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your-key
+```
+
+Available provider names include `anthropic`, `gemini`, `groq`,
+`openai-compatible`, and `ollama`. Set `SCREEN_PROVIDER` or `DRAFT_PROVIDER`
+to select a different provider for an individual stage; `SCREEN_MODEL` and
+`DRAFT_MODEL` choose the model IDs. See [SETUP.md](SETUP.md) for provider
+details and environment-specific instructions.
+
+## Run the application
+
+```bash
+# Build the digest without sending email
+python -m jobhunt run
+
+# Limit provider usage while testing
+python -m jobhunt run --limit 10
+
+# Screen jobs without generating draft kits
+python -m jobhunt run --no-draft
+
+# Send the digest through configured SMTP
+python -m jobhunt run --send
+```
+
+The tool only finds, ranks, and drafts. It does not submit applications.
+Review every generated statement for accuracy before using it.
+
+## Application tracking
+
+`seen.json` records previously surfaced jobs and application status. It is
+local-only and excluded from Git so each user's first run starts with an empty
+tracker.
+
+```bash
+python -m jobhunt applied "greenhouse:example-company:12345"
+python -m jobhunt stats
+```
+
+The stats command summarizes the tracker and exports `out/tracker.csv`, which
+can be opened in a spreadsheet application.
+
+## Scheduled digests
+
+The [daily workflow](.github/workflows/daily.yml) is configured for weekdays at
+06:00 India Standard Time. GitHub Actions scheduling is best-effort, so a run
+may start later than its scheduled time.
+
+To enable it:
+
+1. Add your reviewed profile as the `PROFILE_JSON` Actions secret.
+2. Add the AI provider key you use, such as `GEMINI_API_KEY`,
+   `ANTHROPIC_API_KEY`, or `GROQ_API_KEY`.
+3. To email the digest, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
+   `SMTP_PASS`, and `MAIL_TO` as Actions secrets.
+4. Optionally add provider/model selections as Actions variables:
+   `LLM_PROVIDER`, `SCREEN_PROVIDER`, `DRAFT_PROVIDER`, `SCREEN_MODEL`, and
+   `DRAFT_MODEL`.
+5. Enable Actions, then run **daily job digest** manually with `dry_run`
+   selected to test without sending email.
+
+The workflow preserves the deduplication store using the Actions cache and
+uploads generated digest files as a short-lived artifact. It does not commit
+personal tracking data back to the repository.
+
+## Project layout
+
+```text
+jobhunt/
+  cli.py        Command-line interface and daily pipeline
+  fetch.py      Shared job record and ATS fetchers/parsers
+  prefilter.py  Title, location, and freshness filters
+  providers.py  AI provider implementations
+  llm.py        Screening, drafting, and profile generation
+  digest.py     HTML digest rendering
+  mailer.py     SMTP delivery
+  store.py      Deduplication and application tracking
+  mock.py       Offline fixtures
+config.yaml     Filters, model limits, and output paths
+companies.yaml  Job boards to poll
+tests/          Parser and pipeline tests
+```
+
+## Privacy and safety
+
+- Never commit `.env`, API keys, SMTP passwords, your resume, or `profile.json`.
+- Generated drafts may be wrong or misleading. Verify every detail before
+  sharing them.
+- Job descriptions and your profile are provided to whichever AI provider you
+  configure. Review that provider's data policies before use.
+- Applications are never submitted automatically; you remain in control.
+
+## Contributing
+
+Issues and pull requests are welcome. When adding an ATS parser, keep HTTP
+fetching separate from parsing and add fixture-based tests so parser behavior
+can be checked without network access.
